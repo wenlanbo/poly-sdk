@@ -18,6 +18,18 @@ export class PolymarketMonitor {
   private startTime: Date;
   private marketsDetected: number = 0;
 
+  // Reconnection state
+  private reconnectAttempts: number = 0;
+  private maxReconnectAttempts: number = 50;
+  private baseReconnectDelay: number = 5000; // 5 seconds (longer to avoid rate limits)
+  private maxReconnectDelay: number = 120000; // 2 minutes
+  private reconnectTimer?: NodeJS.Timeout;
+  private isReconnecting: boolean = false;
+  private healthCheckTimer?: NodeJS.Timeout;
+  private lastEventTime: number = Date.now();
+  private handlersSetup: boolean = false;
+  private lastDisconnectTime: number = 0;
+
   constructor(config: MonitorConfig) {
     this.config = config;
     this.sdk = new PolymarketSDK();
@@ -76,7 +88,32 @@ export class PolymarketMonitor {
       });
     });
 
+    // Setup connection event handlers for reconnection
+    this.setupConnectionHandlers();
+
     // Subscribe to market creation events
+    this.subscribeToMarketEvents();
+
+    this.isRunning = true;
+    this.reconnectAttempts = 0; // Reset on successful connection
+    console.log('\n✅ Monitor is now running!');
+    console.log('═'.repeat(60));
+    console.log('Listening for new Polymarket markets...\n');
+
+    // Log statistics periodically
+    this.startStatsLogger();
+
+    // Start health check for connection monitoring
+    this.startHealthCheck();
+
+    // Handle graceful shutdown
+    this.setupShutdownHandlers();
+  }
+
+  /**
+   * Subscribe to market creation events
+   */
+  private subscribeToMarketEvents(): void {
     console.log('[Monitor] Subscribing to market creation events...');
     this.sdk.realtime.subscribeMarketEvents({
       onMarketEvent: async (event) => {
@@ -85,17 +122,118 @@ export class PolymarketMonitor {
         }
       },
     });
+  }
 
-    this.isRunning = true;
-    console.log('\n✅ Monitor is now running!');
-    console.log('═'.repeat(60));
-    console.log('Listening for new Polymarket markets...\n');
+  /**
+   * Setup WebSocket connection event handlers (only once)
+   */
+  private setupConnectionHandlers(): void {
+    // Prevent multiple handler registrations
+    if (this.handlersSetup) {
+      return;
+    }
+    this.handlersSetup = true;
 
-    // Log statistics periodically
-    this.startStatsLogger();
+    // Handle disconnection with debounce
+    this.sdk.realtime.on('disconnected', (code?: number, reason?: string) => {
+      const now = Date.now();
+      // Debounce: ignore disconnects within 10 seconds of last one
+      if (now - this.lastDisconnectTime < 10000) {
+        return;
+      }
+      this.lastDisconnectTime = now;
 
-    // Handle graceful shutdown
-    this.setupShutdownHandlers();
+      console.log(`\n⚠️  [Monitor] WebSocket disconnected (code: ${code}, reason: ${reason || 'unknown'})`);
+
+      if (this.isRunning && !this.isReconnecting) {
+        this.scheduleReconnect();
+      }
+    });
+
+    // Handle errors
+    this.sdk.realtime.on('error', (error: Error) => {
+      console.error(`\n❌ [Monitor] WebSocket error:`, error.message);
+
+      if (this.isRunning && !this.isReconnecting) {
+        this.scheduleReconnect();
+      }
+    });
+
+    // Handle successful reconnection
+    this.sdk.realtime.on('connected', () => {
+      if (this.isReconnecting) {
+        console.log(`\n✅ [Monitor] Reconnected successfully after ${this.reconnectAttempts} attempt(s)`);
+        this.reconnectAttempts = 0;
+        this.isReconnecting = false;
+        // Note: SDK auto-resubscribes on reconnection, no need to manually resubscribe
+      }
+    });
+  }
+
+  /**
+   * Schedule a reconnection attempt with exponential backoff
+   */
+  private scheduleReconnect(): void {
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      console.error(`\n❌ [Monitor] Max reconnection attempts (${this.maxReconnectAttempts}) reached. Giving up.`);
+      this.isRunning = false;
+      return;
+    }
+
+    this.isReconnecting = true;
+    this.reconnectAttempts++;
+
+    // Exponential backoff with jitter
+    const delay = Math.min(
+      this.baseReconnectDelay * Math.pow(2, this.reconnectAttempts - 1) + Math.random() * 1000,
+      this.maxReconnectDelay
+    );
+
+    console.log(`\n🔄 [Monitor] Scheduling reconnection attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts} in ${(delay / 1000).toFixed(1)}s...`);
+
+    this.reconnectTimer = setTimeout(() => {
+      this.attemptReconnect();
+    }, delay);
+  }
+
+  /**
+   * Attempt to reconnect to the WebSocket
+   */
+  private attemptReconnect(): void {
+    console.log(`\n🔄 [Monitor] Attempting to reconnect...`);
+
+    try {
+      // Disconnect first to clean up
+      this.sdk.realtime.disconnect();
+
+      // Reconnect
+      this.sdk.connect();
+    } catch (error) {
+      console.error(`\n❌ [Monitor] Reconnection failed:`, error);
+      this.scheduleReconnect();
+    }
+  }
+
+  /**
+   * Start periodic health check to ensure connection is alive
+   */
+  private startHealthCheck(): void {
+    // Check connection every 2 minutes
+    const healthCheckInterval = 120000;
+
+    this.healthCheckTimer = setInterval(() => {
+      const isConnected = this.sdk.realtime.isConnected?.() ?? false;
+
+      if (!isConnected && this.isRunning && !this.isReconnecting) {
+        console.log(`\n⚠️  [Health Check] Connection lost, triggering reconnect...`);
+        this.scheduleReconnect();
+      } else if (isConnected) {
+        // Update last event time on successful health check
+        this.lastEventTime = Date.now();
+      }
+    }, healthCheckInterval);
+
+    console.log(`[Monitor] Health check started (every ${healthCheckInterval / 1000}s)`);
   }
 
   /**
@@ -108,6 +246,17 @@ export class PolymarketMonitor {
 
     console.log('\n[Monitor] Shutting down...');
     this.isRunning = false;
+
+    // Clear timers
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+    if (this.healthCheckTimer) {
+      clearInterval(this.healthCheckTimer);
+      this.healthCheckTimer = undefined;
+    }
+
     this.sdk.realtime.disconnect();
     console.log('[Monitor] ✅ Stopped');
   }
