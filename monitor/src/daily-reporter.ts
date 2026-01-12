@@ -1,17 +1,49 @@
 /**
  * Polymarket Daily Reporter
  * Runs once daily at a scheduled time, fetches active markets with volume > 100K,
- * categorizes them, stores in Supabase, and sends a summary to Slack.
+ * categorizes them by official Polymarket tags, stores in Supabase, and sends a summary to Slack.
+ *
+ * Uses the official Polymarket Gamma API:
+ * https://docs.polymarket.com/api-reference/markets/list-markets
  */
 
-import { PolymarketSDK } from '@catalyst-team/poly-sdk';
-import type { GammaMarket } from '@catalyst-team/poly-sdk';
 import { DailyReportConfig, CategorySummary } from './types.js';
 import { SlackNotifier } from './services/slack-notifier.js';
 import { SupabaseStorage } from './services/supabase-storage.js';
 
+const GAMMA_API_BASE = 'https://gamma-api.polymarket.com';
+
+/**
+ * Tag from Polymarket API
+ */
+interface PolymarketTag {
+  id: string;
+  label: string;
+  slug: string;
+  forceShow?: boolean;
+  forceHide?: boolean;
+}
+
+/**
+ * Market from Polymarket API with full tag support
+ */
+interface PolymarketMarket {
+  id: string;
+  question: string;
+  conditionId: string;
+  slug: string;
+  endDate: string;
+  active: boolean;
+  closed: boolean;
+  volumeNum: number;
+  volume24hr?: number;
+  liquidityNum: number;
+  outcomePrices: string; // JSON string like "[0.65, 0.35]"
+  outcomes: string; // JSON string like '["Yes", "No"]'
+  tags?: PolymarketTag[];
+}
+
 export class DailyReporter {
-  private sdk: PolymarketSDK;
   private config: DailyReportConfig;
   private slackNotifier?: SlackNotifier;
   private storage: SupabaseStorage;
@@ -20,7 +52,6 @@ export class DailyReporter {
 
   constructor(config: DailyReportConfig) {
     this.config = config;
-    this.sdk = new PolymarketSDK();
 
     // Initialize storage
     this.storage = new SupabaseStorage(
@@ -120,25 +151,30 @@ export class DailyReporter {
     console.log('═'.repeat(60));
 
     try {
-      // Fetch all active markets with volume > 100K
+      // Fetch all active markets with volume > 100K using official API
       const markets = await this.fetchHighVolumeMarkets();
-      console.log(`[DailyReporter] Found ${markets.length} markets with volume > $100K`);
+      console.log(`[DailyReporter] Found ${markets.length} markets with volume > $${(this.config.filters.minVolume / 1000).toFixed(0)}K`);
 
       if (markets.length === 0) {
         console.log('[DailyReporter] No markets to report');
         return;
       }
 
-      // Categorize markets
+      // Categorize markets using official Polymarket tags
       const categorized = this.categorizeMarkets(markets);
       console.log(`[DailyReporter] Organized into ${Object.keys(categorized).length} categories`);
+
+      // Log categories found
+      for (const [name, cat] of Object.entries(categorized)) {
+        console.log(`  - ${name}: ${cat.markets.length} markets, $${this.formatCompactNumber(cat.totalVolume)}`);
+      }
 
       // Store in Supabase
       await this.storeMarkets(markets);
 
       // Send Slack summary
       if (this.slackNotifier) {
-        await this.slackNotifier.sendDailySummary(categorized, markets.length);
+        await this.slackNotifier.sendDailySummaryV2(categorized, markets.length);
       }
 
       const duration = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -150,62 +186,98 @@ export class DailyReporter {
   }
 
   /**
-   * Fetch all active markets with lifetime volume > 100K
+   * Fetch all active markets with lifetime volume > minVolume
+   * Uses the official Polymarket Gamma API with server-side filtering
    */
-  private async fetchHighVolumeMarkets(): Promise<GammaMarket[]> {
+  private async fetchHighVolumeMarkets(): Promise<PolymarketMarket[]> {
     const minVolume = this.config.filters.minVolume;
-    const allMarkets: GammaMarket[] = [];
+    const allMarkets: PolymarketMarket[] = [];
     let offset = 0;
-    const limit = 100; // API max per request
+    const limit = 100;
     let hasMore = true;
 
     console.log(`[DailyReporter] Fetching active markets with volume > $${minVolume.toLocaleString()}...`);
 
     while (hasMore) {
-      const markets = await this.sdk.gammaApi.getMarkets({
-        active: true,
-        closed: false,
-        order: 'volume',
-        ascending: false,
-        limit,
-        offset,
+      const params = new URLSearchParams({
+        limit: String(limit),
+        offset: String(offset),
+        volume_num_min: String(minVolume),
+        closed: 'false',
+        include_tag: 'true',
+        order: 'volumeNum',
+        ascending: 'false',
       });
+
+      const response = await fetch(`${GAMMA_API_BASE}/markets?${params}`);
+
+      if (!response.ok) {
+        throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+      }
+
+      const markets = await response.json() as PolymarketMarket[];
 
       if (markets.length === 0) {
         hasMore = false;
         break;
       }
 
-      // Filter by minimum volume
-      const filteredMarkets = markets.filter((m: GammaMarket) => m.volume >= minVolume);
-      allMarkets.push(...filteredMarkets);
+      allMarkets.push(...markets);
+      offset += limit;
 
-      // If the last market in this batch is below threshold, we're done
-      if (markets[markets.length - 1].volume < minVolume) {
+      // If we got fewer than limit, we've reached the end
+      if (markets.length < limit) {
         hasMore = false;
-      } else {
-        offset += limit;
       }
 
-      // Safety limit to prevent infinite loops
-      if (offset > 10000) {
-        console.warn('[DailyReporter] Reached safety limit of 10000 markets');
+      // Safety limit
+      if (offset > 5000) {
+        console.warn('[DailyReporter] Reached safety limit of 5000 markets');
         hasMore = false;
       }
     }
 
     // Sort by volume descending
-    return allMarkets.sort((a, b) => b.volume - a.volume);
+    return allMarkets.sort((a, b) => b.volumeNum - a.volumeNum);
   }
 
   /**
-   * Categorize markets by keyword detection in question text
+   * Categorize markets using official Polymarket tags
+   * Priority: Sports > Politics > Crypto > Pop Culture > Science & Tech > Business
    */
-  private categorizeMarkets(markets: GammaMarket[]): Record<string, CategorySummary> {
+  private categorizeMarkets(markets: PolymarketMarket[]): Record<string, CategorySummary> {
     const categories: Record<string, CategorySummary> = {};
 
+    // Priority tags to look for (in order of preference for primary category)
+    const priorityTags = ['Sports', 'Politics', 'Crypto', 'Pop Culture', 'Science & Tech', 'Business', 'Economy', 'Finance'];
+
     for (const market of markets) {
-      const category = this.detectCategory(market.question);
+      let category = 'Other';
+
+      if (market.tags && market.tags.length > 0) {
+        // Find the first priority tag that matches
+        for (const priorityTag of priorityTags) {
+          const found = market.tags.find(t =>
+            t.label?.toLowerCase() === priorityTag.toLowerCase() ||
+            t.slug?.toLowerCase() === priorityTag.toLowerCase().replace(/\s+/g, '-')
+          );
+          if (found) {
+            category = found.label || priorityTag;
+            break;
+          }
+        }
+
+        // If no priority tag found, use the first visible tag
+        if (category === 'Other') {
+          const visibleTag = market.tags.find(t => !t.forceHide && t.label);
+          if (visibleTag && visibleTag.label) {
+            category = visibleTag.label;
+          }
+        }
+      }
+
+      // Normalize category name
+      category = this.normalizeCategory(category);
 
       if (!categories[category]) {
         categories[category] = {
@@ -215,8 +287,10 @@ export class DailyReporter {
         };
       }
 
-      categories[category].markets.push(market);
-      categories[category].totalVolume += market.volume;
+      // Convert to the format expected by CategorySummary
+      const normalizedMarket = this.normalizeMarket(market);
+      categories[category].markets.push(normalizedMarket as any);
+      categories[category].totalVolume += market.volumeNum;
     }
 
     // Sort categories by total volume
@@ -233,103 +307,98 @@ export class DailyReporter {
   }
 
   /**
-   * Detect category from market question using keywords
+   * Normalize category names for consistency
    */
-  private detectCategory(question: string): string {
-    const q = question.toLowerCase();
+  private normalizeCategory(category: string): string {
+    const normalizations: Record<string, string> = {
+      'fed': 'Economy',
+      'fed rates': 'Economy',
+      'finance': 'Economy',
+      'economic policy': 'Economy',
+      'soccer': 'Sports',
+      'nba': 'Sports',
+      'nfl': 'Sports',
+      'mlb': 'Sports',
+      'nhl': 'Sports',
+      'epl': 'Sports',
+      'tennis': 'Sports',
+      'mma': 'Sports',
+      'pop culture': 'Entertainment',
+      'science & tech': 'Tech',
+      'ai': 'Tech',
+    };
 
-    // Politics
-    if (/\b(president|election|trump|biden|democrat|republican|congress|senate|governor|mayor|primary|nomination|poll|vote|cabinet|impeach)\b/.test(q)) {
-      return 'Politics';
+    const lower = category.toLowerCase();
+    return normalizations[lower] || category;
+  }
+
+  /**
+   * Normalize market data for storage and display
+   */
+  private normalizeMarket(market: PolymarketMarket) {
+    let outcomePrices: number[] = [0.5, 0.5];
+    try {
+      const parsed = JSON.parse(market.outcomePrices);
+      if (Array.isArray(parsed)) {
+        outcomePrices = parsed.map(Number);
+      }
+    } catch {
+      // Use default
     }
 
-    // Geopolitics
-    if (/\b(iran|israel|russia|ukraine|china|taiwan|war|strike|invasion|sanction|nato|military|nuclear|missile|ceasefire|peace)\b/.test(q)) {
-      return 'Geopolitics';
-    }
-
-    // Sports - Soccer/Football
-    if (/\b(fifa|world cup|premier league|la liga|champions league|soccer|football|messi|ronaldo)\b/.test(q) && !/\b(nfl|super bowl)\b/.test(q)) {
-      return 'Soccer';
-    }
-
-    // Sports - American Football
-    if (/\b(nfl|super bowl|touchdown|quarterback|patriots|chiefs|cowboys)\b/.test(q)) {
-      return 'NFL';
-    }
-
-    // Sports - Basketball
-    if (/\b(nba|basketball|lakers|celtics|warriors|lebron)\b/.test(q)) {
-      return 'NBA';
-    }
-
-    // Sports - Other
-    if (/\b(mlb|nhl|ufc|boxing|tennis|golf|olympics|f1|formula 1|racing)\b/.test(q)) {
-      return 'Sports';
-    }
-
-    // Crypto
-    if (/\b(bitcoin|btc|ethereum|eth|crypto|solana|sol|dogecoin|doge|altcoin|defi|nft)\b/.test(q)) {
-      return 'Crypto';
-    }
-
-    // Economy/Finance
-    if (/\b(fed|federal reserve|interest rate|inflation|gdp|recession|stock|s&p|nasdaq|dow|treasury|unemployment|tariff)\b/.test(q)) {
-      return 'Economy';
-    }
-
-    // Tech
-    if (/\b(ai|artificial intelligence|openai|chatgpt|google|apple|microsoft|meta|amazon|tesla|spacex|elon musk|starship)\b/.test(q)) {
-      return 'Tech';
-    }
-
-    // Entertainment
-    if (/\b(oscar|grammy|emmy|movie|film|album|music|netflix|disney|celebrity|kardashian)\b/.test(q)) {
-      return 'Entertainment';
-    }
-
-    // Weather
-    if (/\b(temperature|weather|hurricane|storm|rainfall|snow|climate)\b/.test(q)) {
-      return 'Weather';
-    }
-
-    return 'Other';
+    return {
+      id: market.id,
+      conditionId: market.conditionId,
+      slug: market.slug,
+      question: market.question,
+      volume: market.volumeNum,
+      volume24hr: market.volume24hr,
+      liquidity: market.liquidityNum,
+      outcomePrices,
+      endDate: market.endDate ? new Date(market.endDate) : undefined,
+      active: market.active,
+      closed: market.closed,
+      tags: market.tags,
+    };
   }
 
   /**
    * Store markets in Supabase
    */
-  private async storeMarkets(markets: GammaMarket[]): Promise<void> {
+  private async storeMarkets(markets: PolymarketMarket[]): Promise<void> {
     console.log(`[DailyReporter] Storing ${markets.length} markets in Supabase...`);
 
     let stored = 0;
-    let skipped = 0;
+    let updated = 0;
 
     for (const market of markets) {
       try {
+        const normalized = this.normalizeMarket(market);
+        const primaryTag = market.tags?.find(t => !t.forceHide)?.label;
+
         // Check if already exists
         const exists = await this.storage.marketExists(market.conditionId);
         if (exists) {
           // Update existing market
           await this.storage.updateMarket(market.conditionId, {
-            volume: market.volume,
-            liquidity: market.liquidity,
-            yesPrice: market.outcomePrices[0],
-            noPrice: market.outcomePrices[1],
+            volume: market.volumeNum,
+            liquidity: market.liquidityNum,
+            yesPrice: normalized.outcomePrices[0],
+            noPrice: normalized.outcomePrices[1],
           });
-          skipped++;
+          updated++;
         } else {
           // Store new market
           await this.storage.storeMarket({
             conditionId: market.conditionId,
             question: market.question,
-            category: market.tags?.[0],
+            category: primaryTag,
             slug: market.slug,
-            endDate: market.endDate,
-            volume: market.volume,
-            liquidity: market.liquidity,
-            initialYesPrice: market.outcomePrices[0],
-            initialNoPrice: market.outcomePrices[1],
+            endDate: market.endDate ? new Date(market.endDate) : undefined,
+            volume: market.volumeNum,
+            liquidity: market.liquidityNum,
+            initialYesPrice: normalized.outcomePrices[0],
+            initialNoPrice: normalized.outcomePrices[1],
             detectedAt: new Date(),
           });
           stored++;
@@ -339,7 +408,20 @@ export class DailyReporter {
       }
     }
 
-    console.log(`[DailyReporter] Stored ${stored} new markets, updated ${skipped} existing`);
+    console.log(`[DailyReporter] Stored ${stored} new markets, updated ${updated} existing`);
+  }
+
+  /**
+   * Format number in compact form (e.g., 1.5M, 250K)
+   */
+  private formatCompactNumber(num: number): string {
+    if (num >= 1_000_000) {
+      return (num / 1_000_000).toFixed(1) + 'M';
+    }
+    if (num >= 1_000) {
+      return (num / 1_000).toFixed(0) + 'K';
+    }
+    return num.toFixed(0);
   }
 
   /**
@@ -347,6 +429,19 @@ export class DailyReporter {
    */
   private async testConnections(): Promise<void> {
     console.log('\n[DailyReporter] Testing connections...\n');
+
+    // Test Polymarket API
+    try {
+      const response = await fetch(`${GAMMA_API_BASE}/markets?limit=1`);
+      if (response.ok) {
+        console.log('[Polymarket API] Connection successful');
+      } else {
+        throw new Error(`HTTP ${response.status}`);
+      }
+    } catch (error) {
+      console.error('[Polymarket API] Connection failed:', error);
+      throw new Error('Polymarket API connection failed');
+    }
 
     // Test Supabase
     const supabaseOk = await this.storage.testConnection();
