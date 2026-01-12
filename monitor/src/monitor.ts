@@ -4,7 +4,7 @@
  * stores them in Supabase, and sends Slack notifications
  */
 
-import { PolymarketSDK } from '../../src/index.js';
+import { PolymarketSDK } from '@catalyst-team/poly-sdk';
 import { MarketData, MonitorConfig } from './types.js';
 import { SlackNotifier } from './services/slack-notifier.js';
 import { SupabaseStorage } from './services/supabase-storage.js';
@@ -117,13 +117,23 @@ export class PolymarketMonitor {
    */
   private async handleNewMarket(event: any): Promise<void> {
     try {
-      const conditionId = event.conditionId;
+      // Debug: log raw event to understand structure
+      console.log('\n[DEBUG] Raw event:', JSON.stringify(event, null, 2));
+
+      // Try multiple possible locations for condition_id
+      const conditionId = event.conditionId || event.data?.condition_id || event.data?.market || '';
 
       console.log('\n' + '═'.repeat(60));
       console.log(`🆕 NEW MARKET DETECTED!`);
       console.log('═'.repeat(60));
       console.log(`Condition ID: ${conditionId}`);
       console.log(`Timestamp: ${new Date(event.timestamp).toLocaleString()}`);
+
+      // Skip if no valid condition ID
+      if (!conditionId) {
+        console.log('⚠️  No valid condition ID found, skipping');
+        return;
+      }
 
       // Check if already in database (prevent duplicates)
       const exists = await this.storage.marketExists(conditionId);
@@ -137,10 +147,12 @@ export class PolymarketMonitor {
       const market = await this.sdk.markets.getMarket(conditionId);
 
       // Extract market data
+      // Note: category may be available from raw API but not typed in SDK
+      const rawMarket = market as unknown as Record<string, unknown>;
       const marketData: MarketData = {
         conditionId,
         question: market.question,
-        category: market.category,
+        category: typeof rawMarket.category === 'string' ? rawMarket.category : undefined,
         slug: market.slug,
         endDate: market.endDate ? new Date(market.endDate) : undefined,
         volume: market.volume,
