@@ -199,14 +199,13 @@ export class DailyReporter {
   }
 
   /**
-   * Categorize markets by their tags
+   * Categorize markets by keyword detection in question text
    */
   private categorizeMarkets(markets: GammaMarket[]): Record<string, CategorySummary> {
     const categories: Record<string, CategorySummary> = {};
 
     for (const market of markets) {
-      // Use first tag as primary category, or 'Uncategorized'
-      const category = market.tags?.[0] || 'Uncategorized';
+      const category = this.detectCategory(market.question);
 
       if (!categories[category]) {
         categories[category] = {
@@ -231,6 +230,70 @@ export class DailyReporter {
     }
 
     return sortedCategories;
+  }
+
+  /**
+   * Detect category from market question using keywords
+   */
+  private detectCategory(question: string): string {
+    const q = question.toLowerCase();
+
+    // Politics
+    if (/\b(president|election|trump|biden|democrat|republican|congress|senate|governor|mayor|primary|nomination|poll|vote|cabinet|impeach)\b/.test(q)) {
+      return 'Politics';
+    }
+
+    // Geopolitics
+    if (/\b(iran|israel|russia|ukraine|china|taiwan|war|strike|invasion|sanction|nato|military|nuclear|missile|ceasefire|peace)\b/.test(q)) {
+      return 'Geopolitics';
+    }
+
+    // Sports - Soccer/Football
+    if (/\b(fifa|world cup|premier league|la liga|champions league|soccer|football|messi|ronaldo)\b/.test(q) && !/\b(nfl|super bowl)\b/.test(q)) {
+      return 'Soccer';
+    }
+
+    // Sports - American Football
+    if (/\b(nfl|super bowl|touchdown|quarterback|patriots|chiefs|cowboys)\b/.test(q)) {
+      return 'NFL';
+    }
+
+    // Sports - Basketball
+    if (/\b(nba|basketball|lakers|celtics|warriors|lebron)\b/.test(q)) {
+      return 'NBA';
+    }
+
+    // Sports - Other
+    if (/\b(mlb|nhl|ufc|boxing|tennis|golf|olympics|f1|formula 1|racing)\b/.test(q)) {
+      return 'Sports';
+    }
+
+    // Crypto
+    if (/\b(bitcoin|btc|ethereum|eth|crypto|solana|sol|dogecoin|doge|altcoin|defi|nft)\b/.test(q)) {
+      return 'Crypto';
+    }
+
+    // Economy/Finance
+    if (/\b(fed|federal reserve|interest rate|inflation|gdp|recession|stock|s&p|nasdaq|dow|treasury|unemployment|tariff)\b/.test(q)) {
+      return 'Economy';
+    }
+
+    // Tech
+    if (/\b(ai|artificial intelligence|openai|chatgpt|google|apple|microsoft|meta|amazon|tesla|spacex|elon musk|starship)\b/.test(q)) {
+      return 'Tech';
+    }
+
+    // Entertainment
+    if (/\b(oscar|grammy|emmy|movie|film|album|music|netflix|disney|celebrity|kardashian)\b/.test(q)) {
+      return 'Entertainment';
+    }
+
+    // Weather
+    if (/\b(temperature|weather|hurricane|storm|rainfall|snow|climate)\b/.test(q)) {
+      return 'Weather';
+    }
+
+    return 'Other';
   }
 
   /**
