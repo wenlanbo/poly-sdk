@@ -172,9 +172,12 @@ export class DailyReporter {
       // Store in Supabase
       await this.storeMarkets(markets);
 
-      // Send Slack summary
+      // Generate and upload CSV
+      const csvUrl = await this.generateAndUploadCsv(markets, categorized);
+
+      // Send Slack summary with CSV link
       if (this.slackNotifier) {
-        await this.slackNotifier.sendDailySummaryV2(categorized, markets.length);
+        await this.slackNotifier.sendDailySummaryV2(categorized, markets.length, csvUrl);
       }
 
       const duration = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -360,6 +363,75 @@ export class DailyReporter {
       closed: market.closed,
       tags: market.tags,
     };
+  }
+
+  /**
+   * Generate CSV content and upload to Supabase Storage
+   */
+  private async generateAndUploadCsv(
+    markets: PolymarketMarket[],
+    categories: Record<string, CategorySummary>
+  ): Promise<string | null> {
+    try {
+      // Generate CSV content
+      const csvLines: string[] = [];
+
+      // Header
+      csvLines.push('Category,Question,Volume,Liquidity,YES Price,NO Price,End Date,URL');
+
+      // Create a map of market to category
+      const marketCategoryMap = new Map<string, string>();
+      for (const [categoryName, category] of Object.entries(categories)) {
+        for (const market of category.markets) {
+          marketCategoryMap.set((market as any).conditionId, categoryName);
+        }
+      }
+
+      // Add each market
+      for (const market of markets) {
+        const normalized = this.normalizeMarket(market);
+        const category = marketCategoryMap.get(market.conditionId) || 'Other';
+        const url = `https://polymarket.com/event/${market.slug || market.conditionId}`;
+
+        // Escape CSV fields
+        const escapeCsv = (str: string) => {
+          if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+            return `"${str.replace(/"/g, '""')}"`;
+          }
+          return str;
+        };
+
+        csvLines.push([
+          escapeCsv(category),
+          escapeCsv(market.question),
+          market.volumeNum.toFixed(2),
+          market.liquidityNum.toFixed(2),
+          (normalized.outcomePrices[0] * 100).toFixed(1) + '%',
+          (normalized.outcomePrices[1] * 100).toFixed(1) + '%',
+          market.endDate || '',
+          url,
+        ].join(','));
+      }
+
+      const csvContent = csvLines.join('\n');
+
+      // Generate filename with date
+      const date = new Date();
+      const dateStr = date.toISOString().split('T')[0];
+      const filename = `polymarket-report-${dateStr}.csv`;
+
+      // Upload to Supabase Storage
+      const csvUrl = await this.storage.uploadCsv(filename, csvContent);
+
+      if (csvUrl) {
+        console.log(`[DailyReporter] CSV uploaded: ${csvUrl}`);
+      }
+
+      return csvUrl;
+    } catch (error) {
+      console.error('[DailyReporter] Error generating CSV:', error);
+      return null;
+    }
   }
 
   /**

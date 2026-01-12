@@ -6,11 +6,68 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { MarketData, StoredMarket } from '../types.js';
 
+const CSV_BUCKET = 'daily-reports';
+
 export class SupabaseStorage {
   private client: SupabaseClient;
+  private supabaseUrl: string;
 
   constructor(supabaseUrl: string, supabaseKey: string) {
     this.client = createClient(supabaseUrl, supabaseKey);
+    this.supabaseUrl = supabaseUrl;
+  }
+
+  /**
+   * Initialize storage bucket for CSV files
+   */
+  async initializeBucket(): Promise<void> {
+    const { data: buckets } = await this.client.storage.listBuckets();
+    const bucketExists = buckets?.some(b => b.name === CSV_BUCKET);
+
+    if (!bucketExists) {
+      const { error } = await this.client.storage.createBucket(CSV_BUCKET, {
+        public: true,
+        fileSizeLimit: 10485760, // 10MB
+      });
+      if (error && !error.message.includes('already exists')) {
+        console.error('[Supabase] Error creating bucket:', error);
+      } else {
+        console.log(`[Supabase] Created storage bucket: ${CSV_BUCKET}`);
+      }
+    }
+  }
+
+  /**
+   * Upload CSV content and return public URL
+   */
+  async uploadCsv(filename: string, csvContent: string): Promise<string | null> {
+    try {
+      // Ensure bucket exists
+      await this.initializeBucket();
+
+      const { error } = await this.client.storage
+        .from(CSV_BUCKET)
+        .upload(filename, csvContent, {
+          contentType: 'text/csv',
+          upsert: true,
+        });
+
+      if (error) {
+        console.error('[Supabase] Error uploading CSV:', error);
+        return null;
+      }
+
+      // Get public URL
+      const { data } = this.client.storage
+        .from(CSV_BUCKET)
+        .getPublicUrl(filename);
+
+      console.log(`[Supabase] CSV uploaded: ${filename}`);
+      return data.publicUrl;
+    } catch (error) {
+      console.error('[Supabase] Error uploading CSV:', error);
+      return null;
+    }
   }
 
   /**

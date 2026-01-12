@@ -170,7 +170,8 @@ export class SlackNotifier {
    */
   async sendDailySummaryV2(
     categories: Record<string, CategorySummary>,
-    totalMarkets: number
+    totalMarkets: number,
+    csvUrl?: string | null
   ): Promise<boolean> {
     if (!this.enabled || !this.webhookUrl) {
       console.log('[Slack] Notifications disabled, skipping daily summary');
@@ -178,7 +179,7 @@ export class SlackNotifier {
     }
 
     try {
-      const payload = this.buildDailySummaryMessageV2(categories, totalMarkets);
+      const payload = this.buildDailySummaryMessageV2(categories, totalMarkets, csvUrl);
 
       const response = await fetch(this.webhookUrl, {
         method: 'POST',
@@ -205,7 +206,8 @@ export class SlackNotifier {
    */
   private buildDailySummaryMessageV2(
     categories: Record<string, CategorySummary>,
-    totalMarkets: number
+    totalMarkets: number,
+    csvUrl?: string | null
   ) {
     const date = new Date().toLocaleDateString('en-US', {
       weekday: 'long',
@@ -241,10 +243,13 @@ export class SlackNotifier {
       { type: 'divider' },
     ];
 
-    // Add each category section
-    for (const [categoryName, category] of Object.entries(categories)) {
-      // Limit to top 5 markets per category
-      const topMarkets = category.markets.slice(0, 5);
+    // Add each category section (limit to top 8 categories to stay under Slack's 50 block limit)
+    const categoryEntries = Object.entries(categories).slice(0, 8);
+    const remainingCategories = Object.keys(categories).length - 8;
+
+    for (const [categoryName, category] of categoryEntries) {
+      // Limit to top 3 markets per category
+      const topMarkets = category.markets.slice(0, 3);
 
       blocks.push({
         type: 'section',
@@ -270,8 +275,8 @@ export class SlackNotifier {
         return `• <${url}|${this.truncate(m.question, 55)}> | ${yesPrice}% YES | $${volume}`;
       });
 
-      if (category.markets.length > 5) {
-        marketLines.push(`_...and ${category.markets.length - 5} more_`);
+      if (category.markets.length > 3) {
+        marketLines.push(`_...and ${category.markets.length - 3} more_`);
       }
 
       blocks.push({
@@ -280,6 +285,38 @@ export class SlackNotifier {
           type: 'mrkdwn',
           text: marketLines.join('\n'),
         },
+      });
+    }
+
+    // Add note about remaining categories if any
+    if (remainingCategories > 0) {
+      blocks.push({
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `_+ ${remainingCategories} more categories not shown_`,
+          },
+        ],
+      });
+    }
+
+    // Add CSV download button if available
+    if (csvUrl) {
+      blocks.push({
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: {
+              type: 'plain_text',
+              text: 'Download Full CSV Report',
+              emoji: true,
+            },
+            url: csvUrl,
+            style: 'primary',
+          },
+        ],
       });
     }
 
