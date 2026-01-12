@@ -81,6 +81,42 @@ export class SupabaseStorage {
   }
 
   /**
+   * Update an existing market with new data
+   */
+  async updateMarket(
+    conditionId: string,
+    updates: {
+      volume?: number;
+      liquidity?: number;
+      yesPrice?: number;
+      noPrice?: number;
+    }
+  ): Promise<boolean> {
+    try {
+      const updateData: Record<string, unknown> = {};
+      if (updates.volume !== undefined) updateData.volume = updates.volume;
+      if (updates.liquidity !== undefined) updateData.liquidity = updates.liquidity;
+      if (updates.yesPrice !== undefined) updateData.initial_yes_price = updates.yesPrice;
+      if (updates.noPrice !== undefined) updateData.initial_no_price = updates.noPrice;
+
+      const { error } = await this.client
+        .from('polymarket_markets')
+        .update(updateData)
+        .eq('condition_id', conditionId);
+
+      if (error) {
+        console.error('[Supabase] Error updating market:', error);
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      console.error('[Supabase] Unexpected error updating market:', error);
+      return false;
+    }
+  }
+
+  /**
    * Mark a market as notified via Slack
    */
   async markSlackNotified(conditionId: string): Promise<boolean> {

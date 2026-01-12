@@ -32,6 +32,49 @@ export interface MonitorConfig {
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
 
+/**
+ * Configuration for the Daily Reporter service
+ */
+export interface DailyReportConfig {
+  // Supabase configuration
+  supabase: {
+    url: string;
+    serviceKey: string;
+  };
+
+  // Notification configuration
+  notifications: {
+    slack?: {
+      enabled: boolean;
+      webhookUrl: string;
+    };
+  };
+
+  // Schedule configuration
+  schedule: {
+    hourUTC: number;      // Hour in UTC (0-23)
+    minuteUTC?: number;   // Minute in UTC (0-59), defaults to 0
+    runImmediately?: boolean; // Run immediately on start
+  };
+
+  // Filter configuration
+  filters: {
+    minVolume: number;    // Minimum lifetime volume in USD
+  };
+
+  // Logging
+  logLevel: 'debug' | 'info' | 'warn' | 'error';
+}
+
+/**
+ * Summary of markets in a category
+ */
+export interface CategorySummary {
+  name: string;
+  markets: import('@catalyst-team/poly-sdk').GammaMarket[];
+  totalVolume: number;
+}
+
 export interface MarketData {
   // Core identification
   conditionId: string;

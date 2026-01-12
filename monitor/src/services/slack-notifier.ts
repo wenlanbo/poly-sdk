@@ -3,7 +3,8 @@
  * Sends rich formatted messages to Slack when new markets are detected
  */
 
-import { MarketData } from '../types.js';
+import type { GammaMarket } from '@catalyst-team/poly-sdk';
+import { MarketData, CategorySummary } from '../types.js';
 
 export class SlackNotifier {
   private webhookUrl: string;
@@ -12,6 +13,156 @@ export class SlackNotifier {
   constructor(webhookUrl: string, enabled: boolean = true) {
     this.webhookUrl = webhookUrl;
     this.enabled = enabled;
+  }
+
+  /**
+   * Send a daily summary of high-volume markets to Slack
+   */
+  async sendDailySummary(
+    categories: Record<string, CategorySummary>,
+    totalMarkets: number
+  ): Promise<boolean> {
+    if (!this.enabled || !this.webhookUrl) {
+      console.log('[Slack] Notifications disabled, skipping daily summary');
+      return false;
+    }
+
+    try {
+      const payload = this.buildDailySummaryMessage(categories, totalMarkets);
+
+      const response = await fetch(this.webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[Slack] Failed to send daily summary: ${response.status} - ${errorText}`);
+        return false;
+      }
+
+      console.log(`[Slack] Daily summary sent (${totalMarkets} markets)`);
+      return true;
+    } catch (error) {
+      console.error('[Slack] Error sending daily summary:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Build the daily summary Slack message
+   */
+  private buildDailySummaryMessage(
+    categories: Record<string, CategorySummary>,
+    totalMarkets: number
+  ) {
+    const date = new Date().toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+
+    // Calculate total volume
+    const totalVolume = Object.values(categories).reduce(
+      (sum, cat) => sum + cat.totalVolume,
+      0
+    );
+
+    const blocks: Record<string, unknown>[] = [
+      {
+        type: 'header',
+        text: {
+          type: 'plain_text',
+          text: 'Polymarket Daily Report',
+          emoji: true,
+        },
+      },
+      {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `${date} | ${totalMarkets} markets | $${this.formatNumber(totalVolume)} total volume`,
+          },
+        ],
+      },
+      { type: 'divider' },
+    ];
+
+    // Add each category section
+    for (const [categoryName, category] of Object.entries(categories)) {
+      // Limit to top 5 markets per category
+      const topMarkets = category.markets.slice(0, 5);
+
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*${categoryName}* (${category.markets.length} markets, $${this.formatNumber(category.totalVolume)})`,
+        },
+      });
+
+      // Add market list
+      const marketLines = topMarkets.map((m: GammaMarket) => {
+        const yesPrice = (m.outcomePrices[0] * 100).toFixed(0);
+        const volume = this.formatCompactNumber(m.volume);
+        const url = `https://polymarket.com/event/${m.slug || m.conditionId}`;
+        return `• <${url}|${this.truncate(m.question, 60)}> | ${yesPrice}% YES | $${volume}`;
+      });
+
+      if (category.markets.length > 5) {
+        marketLines.push(`_...and ${category.markets.length - 5} more_`);
+      }
+
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: marketLines.join('\n'),
+        },
+      });
+    }
+
+    blocks.push(
+      { type: 'divider' },
+      {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `Generated at ${new Date().toLocaleString('en-US', { timeZone: 'Asia/Singapore' })} SGT`,
+          },
+        ],
+      }
+    );
+
+    return {
+      text: `Polymarket Daily Report: ${totalMarkets} markets with $100K+ volume`,
+      blocks,
+    };
+  }
+
+  /**
+   * Truncate text to max length with ellipsis
+   */
+  private truncate(text: string, maxLength: number): string {
+    if (text.length <= maxLength) return text;
+    return text.slice(0, maxLength - 3) + '...';
+  }
+
+  /**
+   * Format number in compact form (e.g., 1.5M, 250K)
+   */
+  private formatCompactNumber(num: number): string {
+    if (num >= 1_000_000) {
+      return (num / 1_000_000).toFixed(1) + 'M';
+    }
+    if (num >= 1_000) {
+      return (num / 1_000).toFixed(0) + 'K';
+    }
+    return num.toFixed(0);
   }
 
   /**
