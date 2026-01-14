@@ -116,3 +116,58 @@ export interface MarketEvent {
   data: Record<string, unknown>;
   timestamp: number;
 }
+
+/**
+ * Kalshi-specific types
+ */
+
+/**
+ * Kalshi market data for storage
+ */
+export interface KalshiMarketData {
+  ticker: string;
+  eventTicker: string;
+  title: string;
+  subtitle?: string;
+  category?: string;
+  closeTime?: Date;
+  volume: number;
+  volume24h: number;
+  liquidity: number;
+  yesPrice: number;
+  noPrice: number;
+  detectedAt: Date;
+}
+
+/**
+ * Stored Kalshi market with database metadata
+ */
+export interface StoredKalshiMarket extends KalshiMarketData {
+  id: number;
+  slackNotified: boolean;
+  slackNotifiedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * Summary of Kalshi markets in a category
+ */
+export interface KalshiCategorySummary {
+  name: string;
+  markets: {
+    ticker: string;
+    eventTicker: string;
+    title: string;
+    subtitle?: string;
+    volume: number;
+    volume24h: number;
+    liquidity: number;
+    yesPrice: number;
+    noPrice: number;
+    closeTime?: Date;
+    status: string;
+    category: string;
+  }[];
+  totalVolume: number;
+}

@@ -4,7 +4,7 @@
  */
 
 import type { GammaMarket } from '@catalyst-team/poly-sdk';
-import { MarketData, CategorySummary } from '../types.js';
+import { MarketData, CategorySummary, KalshiCategorySummary } from '../types.js';
 
 export class SlackNotifier {
   private webhookUrl: string;
@@ -502,6 +502,172 @@ export class SlackNotifier {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     });
+  }
+
+  /**
+   * Send a Kalshi daily summary to Slack
+   */
+  async sendKalshiDailySummary(
+    categories: Record<string, KalshiCategorySummary>,
+    totalMarkets: number,
+    csvUrl?: string | null
+  ): Promise<boolean> {
+    if (!this.enabled || !this.webhookUrl) {
+      console.log('[Slack] Notifications disabled, skipping Kalshi daily summary');
+      return false;
+    }
+
+    try {
+      const payload = this.buildKalshiDailySummaryMessage(categories, totalMarkets, csvUrl);
+
+      const response = await fetch(this.webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[Slack] Failed to send Kalshi daily summary: ${response.status} - ${errorText}`);
+        return false;
+      }
+
+      console.log(`[Slack] Kalshi daily summary sent (${totalMarkets} markets)`);
+      return true;
+    } catch (error) {
+      console.error('[Slack] Error sending Kalshi daily summary:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Build the Kalshi daily summary Slack message
+   */
+  private buildKalshiDailySummaryMessage(
+    categories: Record<string, KalshiCategorySummary>,
+    totalMarkets: number,
+    csvUrl?: string | null
+  ) {
+    const date = new Date().toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+
+    // Calculate total volume
+    const totalVolume = Object.values(categories).reduce(
+      (sum, cat) => sum + cat.totalVolume,
+      0
+    );
+
+    const blocks: Record<string, unknown>[] = [
+      {
+        type: 'header',
+        text: {
+          type: 'plain_text',
+          text: 'Kalshi Daily Report',
+          emoji: true,
+        },
+      },
+      {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `${date} | ${totalMarkets} markets | ${this.formatCompactNumber(totalVolume)} contracts volume`,
+          },
+        ],
+      },
+      { type: 'divider' },
+    ];
+
+    // Add each category section (limit to top 8 categories to stay under Slack's 50 block limit)
+    const categoryEntries = Object.entries(categories).slice(0, 8);
+    const remainingCategories = Object.keys(categories).length - 8;
+
+    for (const [categoryName, category] of categoryEntries) {
+      // Limit to top 3 markets per category
+      const topMarkets = category.markets.slice(0, 3);
+
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*${categoryName}* (${category.markets.length} markets, ${this.formatCompactNumber(category.totalVolume)} contracts)`,
+        },
+      });
+
+      // Add market list
+      const marketLines = topMarkets.map((m) => {
+        const yesPrice = (m.yesPrice * 100).toFixed(0);
+        const volume = this.formatCompactNumber(m.volume);
+        const url = `https://kalshi.com/markets/${m.ticker.toLowerCase()}`;
+        return `• <${url}|${this.truncate(m.title, 55)}> | ${yesPrice}% YES | ${volume} vol`;
+      });
+
+      if (category.markets.length > 3) {
+        marketLines.push(`_...and ${category.markets.length - 3} more_`);
+      }
+
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: marketLines.join('\n'),
+        },
+      });
+    }
+
+    // Add note about remaining categories if any
+    if (remainingCategories > 0) {
+      blocks.push({
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `_+ ${remainingCategories} more categories not shown_`,
+          },
+        ],
+      });
+    }
+
+    // Add CSV download button if available
+    if (csvUrl) {
+      blocks.push({
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: {
+              type: 'plain_text',
+              text: 'Download Full CSV Report',
+              emoji: true,
+            },
+            url: csvUrl,
+            style: 'primary',
+          },
+        ],
+      });
+    }
+
+    blocks.push(
+      { type: 'divider' },
+      {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `Generated at ${new Date().toLocaleString('en-US', { timeZone: 'Asia/Singapore' })} SGT`,
+          },
+        ],
+      }
+    );
+
+    return {
+      text: `Kalshi Daily Report: ${totalMarkets} markets with $100K+ volume`,
+      blocks,
+    };
   }
 
   /**

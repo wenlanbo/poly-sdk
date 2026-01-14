@@ -1,17 +1,17 @@
-# 🚀 Polymarket Market Monitor
+# Prediction Market Monitor
 
-A production-ready background service that monitors Polymarket for new markets in real-time, stores them in Supabase, and sends beautiful Slack notifications.
+A production-ready background service that monitors **Polymarket** and **Kalshi** prediction markets, generates daily reports of high-volume markets, stores data in Supabase, and sends beautiful Slack notifications.
 
-## ✨ Features
+## Features
 
-- 🔔 **Real-time monitoring** - Instant WebSocket notifications for new Polymarket markets
-- 💾 **Supabase storage** - Extended market data stored in PostgreSQL
-- 📱 **Slack notifications** - Beautiful formatted messages with market details
-- 🎯 **Smart filtering** - Filter by category, keywords, liquidity, or volume (optional)
-- 🐳 **Docker ready** - Easy deployment with Docker Compose
-- 📊 **CLI logging** - Clean console output with market details
-- 🔄 **Auto-reconnect** - Handles connection drops gracefully
-- 🛡️ **Production tested** - Built with TypeScript, error handling, and best practices
+- **Daily Reports** - Scheduled daily reports of markets with >$100K volume
+- **Multi-Platform** - Supports both Polymarket and Kalshi
+- **Supabase Storage** - Market data stored in PostgreSQL with full history
+- **Slack Notifications** - Beautiful formatted daily summaries with CSV download
+- **Smart Categorization** - Automatic market categorization by topic
+- **CSV Export** - Downloadable reports uploaded to Supabase Storage
+- **Docker Ready** - Easy deployment with Docker Compose
+- **Production Tested** - Built with TypeScript, error handling, and best practices
 
 ## 📋 Prerequisites
 
@@ -70,7 +70,17 @@ SLACK_ENABLED=true
 SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
 ```
 
-### Step 5: Run the Monitor
+### Step 5: Run the Database Migrations
+
+Run both Polymarket and Kalshi migrations in Supabase:
+
+```bash
+# Copy the SQL from these files and run in Supabase SQL Editor:
+# - supabase/migrations/001_create_markets_table.sql (Polymarket)
+# - supabase/migrations/002_create_kalshi_markets_table.sql (Kalshi)
+```
+
+### Step 6: Run the Monitor
 
 **Option A: Using Docker (Recommended)**
 
@@ -88,12 +98,18 @@ docker-compose down
 **Option B: Direct Node.js**
 
 ```bash
-# Development mode (with auto-reload)
-npm run dev
-
-# Production mode
+# Build first
 npm run build
-npm start
+
+# Run Polymarket reporter
+npm start                  # or: npm run start:polymarket
+
+# Run Kalshi reporter
+npm run start:kalshi
+
+# Development mode (with auto-reload)
+npm run dev                # Polymarket
+npm run dev:kalshi         # Kalshi
 ```
 
 ## 📊 What You'll See
@@ -243,56 +259,77 @@ deploy:
       memory: 1024M  # Increase if needed
 ```
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 monitor/
 ├── src/
-│   ├── index.ts              # Main entry point
-│   ├── monitor.ts            # Core monitoring service
-│   ├── config.ts             # Configuration loader
-│   ├── types.ts              # TypeScript types
+│   ├── index.ts                  # Polymarket entry point
+│   ├── kalshi-index.ts           # Kalshi entry point
+│   ├── daily-reporter.ts         # Polymarket daily reporter
+│   ├── kalshi-daily-reporter.ts  # Kalshi daily reporter
+│   ├── monitor.ts                # Real-time monitoring (legacy)
+│   ├── config.ts                 # Configuration loader
+│   ├── types.ts                  # TypeScript types
 │   └── services/
-│       ├── slack-notifier.ts # Slack integration
-│       └── supabase-storage.ts # Database operations
+│       ├── slack-notifier.ts     # Slack integration
+│       └── supabase-storage.ts   # Database operations
 ├── supabase/
-│   ├── README.md             # Supabase setup guide
+│   ├── README.md                 # Supabase setup guide
 │   └── migrations/
-│       └── 001_create_markets_table.sql
-├── .env.example              # Environment template
-├── docker-compose.yml        # Docker Compose config
-├── Dockerfile                # Docker image definition
-├── package.json              # NPM dependencies
-├── tsconfig.json             # TypeScript config
-└── README.md                 # This file
+│       ├── 001_create_markets_table.sql      # Polymarket table
+│       └── 002_create_kalshi_markets_table.sql # Kalshi table
+├── .env.example                  # Environment template
+├── docker-compose.yml            # Docker Compose config
+├── Dockerfile                    # Docker image definition
+├── package.json                  # NPM dependencies
+├── tsconfig.json                 # TypeScript config
+└── README.md                     # This file
 ```
 
-## 🗄️ Database Schema
+## Database Schema
 
-The `polymarket_markets` table stores:
+### Polymarket Markets Table (`polymarket_markets`)
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | BIGSERIAL | Auto-incrementing primary key |
-| `condition_id` | TEXT | Unique market identifier (from Polymarket) |
+| `condition_id` | TEXT | Unique market identifier |
 | `question` | TEXT | Market question |
 | `category` | TEXT | Market category |
 | `slug` | TEXT | URL slug |
 | `end_date` | TIMESTAMPTZ | Market end date |
 | `volume` | DECIMAL | Trading volume (USD) |
 | `liquidity` | DECIMAL | Liquidity (USD) |
-| `initial_yes_price` | DECIMAL | Initial YES token price |
-| `initial_no_price` | DECIMAL | Initial NO token price |
-| `yes_token_id` | TEXT | YES token identifier |
-| `no_token_id` | TEXT | NO token identifier |
-| `raw_event_data` | JSONB | Full event data (JSON) |
+| `initial_yes_price` | DECIMAL | YES token price |
+| `initial_no_price` | DECIMAL | NO token price |
 | `detected_at` | TIMESTAMPTZ | Detection timestamp |
 | `slack_notified` | BOOLEAN | Slack notification sent? |
-| `slack_notified_at` | TIMESTAMPTZ | When Slack was notified |
 | `created_at` | TIMESTAMPTZ | Record creation time |
 | `updated_at` | TIMESTAMPTZ | Last update time |
 
-**Indexes**: Optimized for queries on `condition_id`, `detected_at`, `category`, and `end_date`.
+### Kalshi Markets Table (`kalshi_markets`)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | BIGSERIAL | Auto-incrementing primary key |
+| `ticker` | TEXT | Unique market ticker |
+| `event_ticker` | TEXT | Parent event ticker |
+| `title` | TEXT | Market title |
+| `subtitle` | TEXT | Market subtitle |
+| `category` | TEXT | Derived category |
+| `close_time` | TIMESTAMPTZ | Market close time |
+| `volume` | DECIMAL | Total contracts traded |
+| `volume_24h` | DECIMAL | 24h volume |
+| `liquidity` | DECIMAL | Available liquidity |
+| `yes_price` | DECIMAL | YES price (0-1) |
+| `no_price` | DECIMAL | NO price (0-1) |
+| `detected_at` | TIMESTAMPTZ | Detection timestamp |
+| `slack_notified` | BOOLEAN | Slack notification sent? |
+| `created_at` | TIMESTAMPTZ | Record creation time |
+| `updated_at` | TIMESTAMPTZ | Last update time |
+
+**Indexes**: Optimized for queries on primary identifiers, `detected_at`, `category`, and volume.
 
 ## 🔍 Querying Your Data
 

@@ -1,18 +1,25 @@
 {
-  "name": "polymarket-monitor",
+  "name": "prediction-market-monitor",
   "version": "1.0.0",
-  "description": "Background service for monitoring new Polymarket markets with Slack notifications and Supabase storage",
+  "description": "Background service for monitoring Polymarket and Kalshi markets with Slack notifications and Supabase storage",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
+    "start:polymarket": "node dist/index.js",
+    "start:kalshi": "node dist/kalshi-index.js",
+    "start:both": "concurrently \"npm run start:polymarket\" \"npm run start:kalshi\"",
     "dev": "tsx src/index.ts",
+    "dev:kalshi": "tsx src/kalshi-index.ts",
     "watch": "tsx watch src/index.ts",
+    "watch:kalshi": "tsx watch src/kalshi-index.ts",
     "clean": "rm -rf dist"
   },
   "keywords": [
     "polymarket",
+    "kalshi",
+    "prediction-markets",
     "monitor",
     "notifications",
     "slack",

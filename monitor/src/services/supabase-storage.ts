@@ -4,7 +4,7 @@
  */
 
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { MarketData, StoredMarket } from '../types.js';
+import { MarketData, StoredMarket, KalshiMarketData, StoredKalshiMarket } from '../types.js';
 
 const CSV_BUCKET = 'daily-reports';
 
@@ -283,6 +283,183 @@ export class SupabaseStorage {
       yesTokenId: data.yes_token_id,
       noTokenId: data.no_token_id,
       rawEventData: data.raw_event_data,
+      detectedAt: new Date(data.detected_at),
+      slackNotified: data.slack_notified,
+      slackNotifiedAt: data.slack_notified_at ? new Date(data.slack_notified_at) : undefined,
+      createdAt: new Date(data.created_at),
+      updatedAt: new Date(data.updated_at),
+    };
+  }
+
+  // ============================================================
+  // Kalshi Market Methods
+  // ============================================================
+
+  /**
+   * Store a new Kalshi market in the database
+   */
+  async storeKalshiMarket(market: KalshiMarketData): Promise<StoredKalshiMarket | null> {
+    try {
+      const { data, error } = await this.client
+        .from('kalshi_markets')
+        .insert({
+          ticker: market.ticker,
+          event_ticker: market.eventTicker,
+          title: market.title,
+          subtitle: market.subtitle,
+          category: market.category,
+          close_time: market.closeTime?.toISOString(),
+          volume: market.volume,
+          volume_24h: market.volume24h,
+          liquidity: market.liquidity,
+          yes_price: market.yesPrice,
+          no_price: market.noPrice,
+          detected_at: market.detectedAt.toISOString(),
+        })
+        .select()
+        .single();
+
+      if (error) {
+        // Check if it's a duplicate
+        if (error.code === '23505') {
+          console.log(`[Supabase] Kalshi market already exists: ${market.ticker}`);
+          return null;
+        }
+        console.error('[Supabase] Error storing Kalshi market:', error);
+        return null;
+      }
+
+      console.log(`[Supabase] Stored Kalshi market: ${market.title.slice(0, 50)}...`);
+      return this.mapToStoredKalshiMarket(data);
+    } catch (error) {
+      console.error('[Supabase] Unexpected error storing Kalshi market:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Check if a Kalshi market already exists in the database
+   */
+  async kalshiMarketExists(ticker: string): Promise<boolean> {
+    try {
+      const { data, error } = await this.client
+        .from('kalshi_markets')
+        .select('ticker')
+        .eq('ticker', ticker)
+        .single();
+
+      if (error && error.code !== 'PGRST116') {
+        // PGRST116 = no rows returned
+        console.error('[Supabase] Error checking Kalshi market existence:', error);
+        return false;
+      }
+
+      return !!data;
+    } catch (error) {
+      console.error('[Supabase] Unexpected error checking Kalshi market:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Update an existing Kalshi market with new data
+   */
+  async updateKalshiMarket(
+    ticker: string,
+    updates: {
+      volume?: number;
+      volume24h?: number;
+      liquidity?: number;
+      yesPrice?: number;
+      noPrice?: number;
+    }
+  ): Promise<boolean> {
+    try {
+      const updateData: Record<string, unknown> = {};
+      if (updates.volume !== undefined) updateData.volume = updates.volume;
+      if (updates.volume24h !== undefined) updateData.volume_24h = updates.volume24h;
+      if (updates.liquidity !== undefined) updateData.liquidity = updates.liquidity;
+      if (updates.yesPrice !== undefined) updateData.yes_price = updates.yesPrice;
+      if (updates.noPrice !== undefined) updateData.no_price = updates.noPrice;
+
+      const { error } = await this.client
+        .from('kalshi_markets')
+        .update(updateData)
+        .eq('ticker', ticker);
+
+      if (error) {
+        console.error('[Supabase] Error updating Kalshi market:', error);
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      console.error('[Supabase] Unexpected error updating Kalshi market:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Get recent Kalshi markets
+   */
+  async getRecentKalshiMarkets(limit: number = 10): Promise<StoredKalshiMarket[]> {
+    try {
+      const { data, error } = await this.client
+        .from('kalshi_markets')
+        .select('*')
+        .order('detected_at', { ascending: false })
+        .limit(limit);
+
+      if (error) {
+        console.error('[Supabase] Error fetching recent Kalshi markets:', error);
+        return [];
+      }
+
+      return data.map(this.mapToStoredKalshiMarket);
+    } catch (error) {
+      console.error('[Supabase] Unexpected error fetching Kalshi markets:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get total count of Kalshi markets
+   */
+  async getKalshiTotalCount(): Promise<number> {
+    try {
+      const { count, error } = await this.client
+        .from('kalshi_markets')
+        .select('*', { count: 'exact', head: true });
+
+      if (error) {
+        console.error('[Supabase] Error getting Kalshi count:', error);
+        return 0;
+      }
+
+      return count || 0;
+    } catch (error) {
+      console.error('[Supabase] Unexpected error getting Kalshi count:', error);
+      return 0;
+    }
+  }
+
+  /**
+   * Map database row to StoredKalshiMarket type
+   */
+  private mapToStoredKalshiMarket(data: any): StoredKalshiMarket {
+    return {
+      id: data.id,
+      ticker: data.ticker,
+      eventTicker: data.event_ticker,
+      title: data.title,
+      subtitle: data.subtitle,
+      category: data.category,
+      closeTime: data.close_time ? new Date(data.close_time) : undefined,
+      volume: data.volume,
+      volume24h: data.volume_24h,
+      liquidity: data.liquidity,
+      yesPrice: data.yes_price,
+      noPrice: data.no_price,
       detectedAt: new Date(data.detected_at),
       slackNotified: data.slack_notified,
       slackNotifiedAt: data.slack_notified_at ? new Date(data.slack_notified_at) : undefined,
