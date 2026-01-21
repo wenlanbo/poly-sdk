@@ -269,10 +269,18 @@ export class SlackNotifier {
           yesPrice = (m.initialYesPrice * 100).toFixed(0);
         }
 
+        // Format 24h price change if available
+        let priceChangeStr = '';
+        if (m.oneDayPriceChange !== undefined && m.oneDayPriceChange !== null) {
+          const change = m.oneDayPriceChange * 100;
+          const sign = change >= 0 ? '+' : '';
+          priceChangeStr = ` (${sign}${change.toFixed(1)}%)`;
+        }
+
         // Handle both volumeNum and volume fields
         const volume = this.formatCompactNumber(m.volume || m.volumeNum || 0);
         const url = `https://polymarket.com/event/${m.slug || m.conditionId}`;
-        return `• <${url}|${this.truncate(m.question, 55)}> | ${yesPrice}% YES | $${volume}`;
+        return `• <${url}|${this.truncate(m.question, 50)}> | ${yesPrice}%${priceChangeStr} | $${volume}`;
       });
 
       if (category.markets.length > 3) {

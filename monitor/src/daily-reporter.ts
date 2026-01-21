@@ -41,6 +41,12 @@ interface PolymarketMarket {
   outcomePrices: string; // JSON string like "[0.65, 0.35]"
   outcomes: string; // JSON string like '["Yes", "No"]'
   tags?: PolymarketTag[];
+  // Price fields
+  bestBid?: number;
+  bestAsk?: number;
+  lastTradePrice?: number;
+  oneDayPriceChange?: number;
+  oneWeekPriceChange?: number;
 }
 
 export class DailyReporter {
@@ -377,7 +383,7 @@ export class DailyReporter {
       const csvLines: string[] = [];
 
       // Header
-      csvLines.push('Category,Question,Volume,Liquidity,YES Price,NO Price,End Date,URL');
+      csvLines.push('Category,Question,Volume,Volume 24h,Liquidity,YES Price,NO Price,End Date,URL');
 
       // Create a map of market to category
       const marketCategoryMap = new Map<string, string>();
@@ -405,6 +411,7 @@ export class DailyReporter {
           escapeCsv(category),
           escapeCsv(market.question),
           market.volumeNum.toFixed(2),
+          (market.volume24hr || 0).toFixed(2),
           market.liquidityNum.toFixed(2),
           (normalized.outcomePrices[0] * 100).toFixed(1) + '%',
           (normalized.outcomePrices[1] * 100).toFixed(1) + '%',
